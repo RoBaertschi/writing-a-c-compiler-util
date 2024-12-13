@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -16,11 +18,52 @@ const (
 	compound
 	increment
 	goto_
-
+)
+const (
 	selectExtraCreditFeature site = iota
 	saveDialog
 	run
+	ran
 )
+
+func (ect *extraCreditType) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+
+	switch strings.ToLower(s) {
+	default:
+		return fmt.Errorf("unknown extraCreditType %v", s)
+	case "bitwise":
+		*ect = bitwise
+	case "compound":
+		*ect = compound
+	case "increment":
+		*ect = increment
+	case "goto":
+		*ect = goto_
+	}
+	return nil
+}
+
+func (ect extraCreditType) MarshalJSON() ([]byte, error) {
+	var s string
+	switch ect {
+	default:
+		return []byte{}, fmt.Errorf("unkown extraCreditType %v", ect)
+	case bitwise:
+		s = "Bitwise"
+	case compound:
+		s = "Compound"
+	case increment:
+		s = "Increment"
+	case goto_:
+		s = "Goto"
+	}
+
+	return json.Marshal(s)
+}
 
 func (ect extraCreditType) data() extraCreditFeature {
 	switch ect {
@@ -38,7 +81,7 @@ func (ect extraCreditType) data() extraCreditFeature {
 }
 
 type settings struct {
-	selectedExtraCredits []extraCreditType
+	SelectedExtraCredits []extraCreditType
 }
 
 type extraCreditFeature struct {
@@ -93,9 +136,11 @@ func (m model) UpdateExtraCreditFeatures(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.selected[m.cursor] = struct{}{}
 			}
-		case "Enter":
+		case "enter":
 			m.s = saveDialog
 			m.cursor = 0
+		default:
+			fmt.Println(msg.String())
 		}
 	}
 
@@ -120,7 +165,7 @@ func (m model) UpdateSaveDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor = 1
 			}
 
-		case "Enter":
+		case "enter":
 			m.s = run
 
 			if m.cursor == 0 {
@@ -133,7 +178,7 @@ func (m model) UpdateSaveDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 
-				s := settings{selectedExtraCredits: selectedExtraCredits}
+				s := settings{SelectedExtraCredits: selectedExtraCredits}
 
 				toWrite, err := json.Marshal(s)
 				if err != nil {
@@ -141,7 +186,7 @@ func (m model) UpdateSaveDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return nil, tea.Quit
 				}
 
-				err = os.WriteFile(".wacc", toWrite, 0)
+				err = os.WriteFile(".wacc", toWrite, 0o775)
 				if err != nil {
 					fmt.Printf("Failed to write file \".wacc\", error: %v", err)
 					return nil, tea.Quit
@@ -153,12 +198,42 @@ func (m model) UpdateSaveDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) UpdateRun(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "q":
+			return m, tea.Quit
+		case "enter":
+			cmd := exec.Command("../../rust/writing-a-c-compiler-tests/test_compiler")
+
+			for i, choice := range m.extraCredits {
+				_, ok := m.selected[i]
+				if ok {
+					cmd.Args = append(cmd.Args, choice.cmdLine)
+				}
+			}
+
+			m.s = ran
+			return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+				fmt.Printf("Failed to execute test_compiler %v", err)
+				return tea.Quit
+			})
+		}
+	}
+	return m, nil
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.s {
 	case selectExtraCreditFeature:
 		return m.UpdateExtraCreditFeatures(msg)
 	case saveDialog:
 		return m.UpdateSaveDialog(msg)
+	case run:
+		return m.UpdateRun(msg)
+	case ran:
+		return m, tea.Quit
 	}
 
 	return m, nil
@@ -198,9 +273,15 @@ func (m model) ViewSaveDialog() string {
 		no = "x"
 	}
 
-	s += fmt.Sprintf("[%s] yes [%s] no\n", yes, no)
+	s += fmt.Sprintf("\n[%s] yes [%s] no\n", yes, no)
 
 	s += fmt.Sprintf("\nPress q to quit, press Enter to continue.\n")
+
+	return s
+}
+
+func (m model) ViewRun() string {
+	s := "Are you sure, if you want to run the test compiler? [press enter to continue, q to exit]\n"
 
 	return s
 }
@@ -212,9 +293,13 @@ func (m model) View() string {
 		return m.ViewExtraCreditFeatures()
 	case saveDialog:
 		return m.ViewSaveDialog()
+	case run:
+		return m.ViewRun()
+	case ran:
+		return ""
 	}
 
-	return "invalid app site"
+	panic("invalid app site")
 }
 
 func main() {
